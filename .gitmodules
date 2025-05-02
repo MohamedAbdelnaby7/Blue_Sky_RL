@@ -1,0 +1,3 @@
+[submodule "bluesky-gym"]
+	path = bluesky-gym
+	url = https://github.com/TUDelft-CNS-ATM/bluesky-gym.git
