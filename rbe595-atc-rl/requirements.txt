@@ -1,0 +1,4 @@
+torch>=2.1         
+stable-baselines3[extra]==2.3.0
+gymnasium==0.29.1
+moviepy>=1.0       
