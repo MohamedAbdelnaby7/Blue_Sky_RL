@@ -90,19 +90,27 @@ class SectorCREnvV1(gym.Env):
             "goal_direction": spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
             "goal_distance": spaces.Box(low=0.0, high=100.0, shape=(1,), dtype=np.float32),
             "intruders_info": spaces.Box(
-                low=np.array([
-                    self.sector_dims["x_min"], self.sector_dims["y_min"], self.sector_dims["z_min"],
-                    -500.0, -500.0, -500.0, 0.0, 0.0, -3000.0
-                ]),
-                high=np.array([
-                    self.sector_dims["x_max"], self.sector_dims["y_max"], self.sector_dims["z_max"],
-                    500.0, 500.0, 500.0, 360.0, 500.0, 3000.0
-                ]),
-                shape=(num_intruders, 9),  # [x, y, z, rel_x, rel_y, rel_z, heading, speed, vs]
+                low=np.tile(
+                    np.array([
+                        self.sector_dims["x_min"], self.sector_dims["y_min"], self.sector_dims["z_min"],
+                        -500.0, -500.0, -500.0, 0.0, 0.0, -3000.0
+                    ]),
+                    (num_intruders, 1)
+                ).reshape(num_intruders, 9),
+                high=np.tile(
+                    np.array([
+                        self.sector_dims["x_max"], self.sector_dims["y_max"], self.sector_dims["z_max"],
+                        500.0, 500.0, 500.0, 360.0, 500.0, 3000.0
+                    ]),
+                    (num_intruders, 1)
+                ).reshape(num_intruders, 9),
                 dtype=np.float32
             ),
             "altitude_diffs": spaces.Box(low=-30000.0, high=30000.0, shape=(num_intruders,), dtype=np.float32),
         })
+        
+        # Initialize prev_goal_distance for reward calculation
+        self.prev_goal_distance = None
         
         # Initialization flag
         self.initialized = False
@@ -142,6 +150,9 @@ class SectorCREnvV1(gym.Env):
         
         # Set goal position (exit point from sector)
         self.goal_position = np.array([40.0, 40.0, 20000.0])  # Goal position
+        
+        # Reset previous goal distance for reward calculation
+        self.prev_goal_distance = np.linalg.norm(self.goal_position - self.own_aircraft["position"])
         
         # Generate intruder aircraft
         self.intruders = []
@@ -430,36 +441,50 @@ class SectorCREnvV1(gym.Env):
 
     def _compute_reward(self, conflict, goal_reached, out_of_bounds):
         """
-        Compute reward based on current state.
-        
-        Args:
-            conflict: Whether aircraft has a conflict
-            goal_reached: Whether goal has been reached
-            out_of_bounds: Whether aircraft is outside sector bounds
-            
-        Returns:
-            float: Reward value
+        Compute reward based on current state with improved goal-directed incentives.
         """
         # Base reward is slightly negative to encourage efficient paths
         reward = -0.1
         
-        # Large penalty for conflict
+        # Terminal rewards/penalties
         if conflict:
-            return -100.0
+            return -100.0  # Keep the same penalty for conflict
         
-        # Large penalty for leaving sector
         if out_of_bounds:
-            return -50.0
+            return -50.0  # Keep the same penalty for out of bounds
         
-        # Large reward for reaching goal
         if goal_reached:
-            return 100.0
+            return 100.0  # Keep the same reward for reaching goal
         
         # Calculate distance to goal
         goal_distance = np.linalg.norm(self.goal_position - self.own_aircraft["position"])
         
+        # Store previous step's distance to calculate progress
+        if self.prev_goal_distance is None:
+            self.prev_goal_distance = goal_distance
+        
+        # Calculate progress toward goal (positive = getting closer)
+        progress = self.prev_goal_distance - goal_distance
+        self.prev_goal_distance = goal_distance
+        
+        # Higher reward for making progress toward goal
+        progress_reward = progress * 15.0  # Strongly incentivize moving toward goal
+        
         # Reward inversely proportional to distance (closer = higher reward)
-        distance_reward = 5.0 / (1.0 + 0.1 * goal_distance)
+        # Make this reward stronger to create a stronger pull toward the goal
+        distance_reward = 10.0 / (1.0 + 0.1 * goal_distance)  # Increased from 5.0
+        
+        # Add directional reward - reward when heading toward goal
+        heading_rad = np.radians(float(self.own_aircraft["heading"][0]))
+        goal_vec = self.goal_position - self.own_aircraft["position"]
+        goal_angle = np.arctan2(goal_vec[0], goal_vec[1])
+        heading_diff = abs(heading_rad - goal_angle) % (2 * np.pi)
+        if heading_diff > np.pi:
+            heading_diff = 2 * np.pi - heading_diff
+        
+        # Reward for aligning heading with goal direction
+        # This will encourage the agent to point toward the goal
+        direction_reward = 3.0 * (1.0 - heading_diff / np.pi)
         
         # Reward for maintaining separation from intruders
         separation_reward = 0.0
@@ -492,8 +517,8 @@ class SectorCREnvV1(gym.Env):
         if vs_magnitude > 500.0:
             efficiency_reward -= (vs_magnitude - 500.0) / 1500.0
         
-        # Combine rewards
-        reward += distance_reward + separation_reward + efficiency_reward
+        # Combine rewards - note the increased weights for goal-directed rewards
+        reward += direction_reward + progress_reward + distance_reward + separation_reward + efficiency_reward
         
         return reward
 
