@@ -442,19 +442,19 @@ class SectorCREnvV1(gym.Env):
     def _compute_reward(self, conflict, goal_reached, out_of_bounds):
         """
         Compute reward based on current state with improved goal-directed incentives.
-        """
-        # Base reward is slightly negative to encourage efficient paths
-        reward = -0.1
         
-        # Terminal rewards/penalties
+        This function provides stronger goal-seeking behavior and smoother reward gradients
+        that work well with DDPG's value-based learning approach.
+        """
+        # Terminal rewards/penalties remain the same
         if conflict:
-            return -100.0  # Keep the same penalty for conflict
+            return -100.0
         
         if out_of_bounds:
-            return -50.0  # Keep the same penalty for out of bounds
+            return -50.0
         
         if goal_reached:
-            return 100.0  # Keep the same reward for reaching goal
+            return 150.0  # Increased from 100.0 for stronger terminal reward
         
         # Calculate distance to goal
         goal_distance = np.linalg.norm(self.goal_position - self.own_aircraft["position"])
@@ -467,12 +467,16 @@ class SectorCREnvV1(gym.Env):
         progress = self.prev_goal_distance - goal_distance
         self.prev_goal_distance = goal_distance
         
-        # Higher reward for making progress toward goal
-        progress_reward = progress * 15.0  # Strongly incentivize moving toward goal
+        # Base reward - slight negative to encourage efficient paths
+        reward = -0.05  # Reduced from -0.1 for gentler time penalty
         
-        # Reward inversely proportional to distance (closer = higher reward)
-        # Make this reward stronger to create a stronger pull toward the goal
-        distance_reward = 10.0 / (1.0 + 0.1 * goal_distance)  # Increased from 5.0
+        # Higher reward for making progress toward goal - with scaling based on distance
+        # More reward for progress when closer to goal
+        progress_factor = 1.5 / (1.0 + 0.03 * goal_distance)  # Scales up as distance decreases
+        progress_reward = progress * 20.0 * progress_factor  # Increased from 15.0
+        
+        # Distance-based reward - stronger pull when closer to goal
+        distance_reward = 15.0 / (1.0 + 0.1 * goal_distance)  # Increased from 10.0
         
         # Add directional reward - reward when heading toward goal
         heading_rad = np.radians(float(self.own_aircraft["heading"][0]))
@@ -482,9 +486,8 @@ class SectorCREnvV1(gym.Env):
         if heading_diff > np.pi:
             heading_diff = 2 * np.pi - heading_diff
         
-        # Reward for aligning heading with goal direction
-        # This will encourage the agent to point toward the goal
-        direction_reward = 3.0 * (1.0 - heading_diff / np.pi)
+        # Stronger direction reward using squared cosine similarity
+        direction_reward = 4.0 * (1.0 - heading_diff / np.pi) ** 2  # Quadratic scaling
         
         # Reward for maintaining separation from intruders
         separation_reward = 0.0
@@ -501,24 +504,37 @@ class SectorCREnvV1(gym.Env):
             h_margin = horizontal_distance - self.horizontal_separation_min
             v_margin = vertical_distance - self.vertical_separation_min
             
-            if h_margin < 3.0 and v_margin < 1000.0:
+            if h_margin < 4.0 and v_margin < 1500.0:  # Extended margin for earlier warning
                 # Calculate safety margin factor (0 = at minimum separation, 1 = far away)
-                h_factor = min(1.0, h_margin / 3.0)
-                v_factor = min(1.0, v_margin / 1000.0)
+                h_factor = min(1.0, h_margin / 4.0)
+                v_factor = min(1.0, v_margin / 1500.0)
                 
-                # Lower reward for closer approaches
-                separation_reward -= (1.0 - h_factor) * (1.0 - v_factor) * 2.0
+                # Smoother penalty function with stronger gradient near minimum separation
+                separation_reward -= (1.0 - h_factor) ** 2 * (1.0 - v_factor) ** 2 * 2.5
         
-        # Calculate efficiency reward (penalize excessive heading changes and altitude changes)
+        # Efficiency rewards
         efficiency_reward = 0.0
         
-        # Penalize excessive vertical speed
+        # Penalize excessive vertical speed but with softer penalties
         vs_magnitude = abs(float(self.own_aircraft["vertical_speed"][0]))
-        if vs_magnitude > 500.0:
-            efficiency_reward -= (vs_magnitude - 500.0) / 1500.0
+        if vs_magnitude > 1000.0:
+            efficiency_reward -= (vs_magnitude - 1000.0) / 1000.0 * 0.3
+        else:
+            # Small bonus for efficient vertical profile
+            efficiency_reward += 0.1
         
-        # Combine rewards - note the increased weights for goal-directed rewards
-        reward += direction_reward + progress_reward + distance_reward + separation_reward + efficiency_reward
+        # Small bonus for maintaining reasonable speed
+        optimal_speed = 250.0
+        speed_diff = abs(float(self.own_aircraft["speed"][0]) - optimal_speed)
+        if speed_diff < 50.0:
+            efficiency_reward += 0.1 * (1.0 - speed_diff / 50.0)
+        
+        # Combine rewards with balanced weights
+        reward += progress_reward * 1.2  # Emphasize progress 
+        reward += distance_reward * 0.8  # Keep distance reward significant
+        reward += direction_reward * 1.0  # Keep directional guidance
+        reward += separation_reward * 1.5  # Emphasize safety
+        reward += efficiency_reward * 0.3  # Minor efficiency incentives
         
         return reward
 
