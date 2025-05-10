@@ -40,6 +40,7 @@ pip install -e .
 
 ```bash
 cd ..
+cd ./rbe595-atc-rl/
 ```
 
 ### 4. Install Required Packages
